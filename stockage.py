@@ -45,12 +45,21 @@ class ErreurGitHub(RuntimeError):
         self.code = code
 
 
+def resume_jeton(token: str) -> str:
+    """Description sans danger du jeton lu (jamais le jeton lui-même)."""
+    bizarres = sorted({f"U+{ord(c):04X}" for c in token if not (c.isascii() and (c.isalnum() or c == "_"))})
+    return (f"jeton lu : {len(token)} caractères, commence par « {token[:11]} », finit par « …{token[-4:]} »"
+            + (f", caractères anormaux : {', '.join(bizarres)}" if bizarres else ""))
+
+
 def _verifier(r) -> None:
     if r.status_code < 400:
         return
     if r.status_code == 401:
+        req = getattr(r, "request", None)
+        jeton = req.headers.get("Authorization", "").removeprefix("Bearer ") if req is not None else ""
         msg = ("Jeton GitHub refusé : il est invalide, expiré ou mal recopié dans les Secrets "
-               "(il doit commencer par github_pat_, entre guillemets, sans espace).")
+               f"(attendu : 93 caractères commençant par github_pat_ ; {resume_jeton(jeton)}).")
     elif r.status_code == 403:
         msg = ("Jeton GitHub sans permission suffisante : il lui faut l'accès au dépôt de données "
                "avec « Contents : Read and write ».")
