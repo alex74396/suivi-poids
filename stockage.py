@@ -39,6 +39,26 @@ def _depuis_csv(texte: str) -> pd.DataFrame:
     return analyse.normaliser(pd.read_csv(io.StringIO(texte), dtype={"commentaire": str}))
 
 
+class ErreurGitHub(RuntimeError):
+    def __init__(self, code: int, message: str):
+        super().__init__(f"{message} (code {code})")
+        self.code = code
+
+
+def _verifier(r) -> None:
+    if r.status_code < 400:
+        return
+    if r.status_code == 401:
+        msg = ("Jeton GitHub refusé : il est invalide, expiré ou mal recopié dans les Secrets "
+               "(il doit commencer par github_pat_, entre guillemets, sans espace).")
+    elif r.status_code == 403:
+        msg = ("Jeton GitHub sans permission suffisante : il lui faut l'accès au dépôt de données "
+               "avec « Contents : Read and write ».")
+    else:
+        msg = "Erreur GitHub inattendue."
+    raise ErreurGitHub(r.status_code, msg)
+
+
 class StockageLocal:
     nom = "fichier local"
 
@@ -71,8 +91,11 @@ class StockageGitHub:
     def _lire(self):
         r = self.s.get(self.url, params={"ref": self.branch}, timeout=15)
         if r.status_code == 404:
+            if self.s.get(self.url.split("/contents/")[0], timeout=15).status_code == 404:
+                raise ErreurGitHub(404, "Dépôt de données introuvable : vérifiez « repo » dans les Secrets "
+                                        "et que le jeton a bien accès à ce dépôt.")
             return analyse.vide(), None
-        r.raise_for_status()
+        _verifier(r)
         j = r.json()
         texte = base64.b64decode(j["content"]).decode("utf-8")
         return _depuis_csv(texte), j["sha"]
@@ -93,7 +116,7 @@ class StockageGitHub:
             if r.status_code in (200, 201):
                 return df
             if r.status_code not in (409, 422):
-                r.raise_for_status()
+                _verifier(r)
         raise RuntimeError("Enregistrement impossible : les données ont changé pendant l'écriture. Réessayez.")
 
 
@@ -103,6 +126,7 @@ def depuis_secrets(secrets) -> StockageLocal | StockageGitHub:
     except Exception:  # pas de fichier secrets.toml
         cfg = None
     if cfg and cfg.get("token") and cfg.get("repo"):
-        return StockageGitHub(cfg["token"], cfg["repo"], cfg.get("path", "suivi_poids.csv"),
-                              cfg.get("branch", "main"))
+        return StockageGitHub(str(cfg["token"]).strip(), str(cfg["repo"]).strip().strip("/"),
+                              str(cfg.get("path", "suivi_poids.csv")).strip(),
+                              str(cfg.get("branch", "main")).strip())
     return StockageLocal()

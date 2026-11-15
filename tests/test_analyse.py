@@ -80,6 +80,8 @@ class FausseAPI:
         self.headers = {}
 
     def get(self, url, params=None, timeout=None):
+        if "/contents/" not in url:  # infos du dépôt
+            return FausseReponse(200)
         if self.fichier is None:
             return FausseReponse(404)
         return FausseReponse(200, {"content": self.fichier, "sha": str(self.sha)})

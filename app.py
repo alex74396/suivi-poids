@@ -61,7 +61,13 @@ def mise_en_page(fig: go.Figure, hauteur: int = 340) -> go.Figure:
     return fig
 
 
-df = charger()
+try:
+    df = charger()
+except Exception as e:  # jeton invalide, dépôt introuvable, réseau…
+    st.title("⚖️ Suivi poids")
+    st.error(f"Impossible de lire les données : {e}")
+    st.caption("Réglage à corriger dans Streamlit Cloud › Manage app › Settings › Secrets.")
+    st.stop()
 avant = st.session_state.get("pesee_avant", True)
 hebdo = analyse.tableau_hebdo(df, avant)
 pesees = hebdo.dropna(subset=["poids_kg"])
