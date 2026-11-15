@@ -15,11 +15,11 @@ python -m pytest tests        # vérifier les calculs
 
 ## Règles de calcul
 
-- Une saisie par semaine (lundi → dimanche). Ressaisir une semaine remplace la saisie existante.
-- Variation hebdomadaire = écart entre deux pesées successives, ramené à 7 jours si une semaine manque.
+- Une saisie par date, avec un interrupteur « Injection ce jour ». On peut se peser sans injection.
+- Variation = écart entre deux pesées successives, ramené à 7 jours.
 - Effet d'une dose = somme des variations ÷ nombre de semaines passées sous cette dose.
-  Par défaut, la pesée est supposée faite **avant** l'injection : la perte constatée est attribuée
-  à la dose de la semaine précédente. Un bouton dans l'onglet « Par dose » permet d'inverser.
+  La perte entre deux pesées est attribuée à la dernière injection faite **avant** la seconde pesée
+  (ex. injection le 15.11 à 105 kg, injection le 22.11 à 102 kg → −3 kg pour la dose du 15.11).
 
 ## Mise en ligne (une seule fois)
 

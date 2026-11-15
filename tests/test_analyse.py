@@ -1,3 +1,4 @@
+import io
 import sys
 from pathlib import Path
 
@@ -10,55 +11,76 @@ import stockage  # noqa: E402
 
 
 def donnees():
+    # injections hebdomadaires le dimanche, pesée le même jour ; une pesée sans injection le mercredi 25.11
     return pd.DataFrame({
-        "date": ["2026-10-05", "2026-10-12", "2026-10-19", "2026-11-02", "2026-11-09"],
-        "dose_mg": [2.5, 2.5, 5.0, 5.0, 5.0],
-        "poids_kg": [100.0, 99.0, 98.0, 94.0, 93.0],
-        "commentaire": ["début", None, "", "deux semaines", "Noël"],
+        "date": ["2026-11-01", "2026-11-08", "2026-11-15", "2026-11-22", "2026-11-25", "2026-11-29",
+                 "2026-12-13"],
+        "injection": [True, True, True, True, False, True, True],
+        "dose_mg": [2.5, 2.5, 5.0, 5.0, None, 5.0, 7.5],
+        "poids_kg": [110.0, 108.0, 105.0, 102.0, 101.5, 101.0, 98.0],
+        "commentaire": ["début", None, "", "", "pesée en milieu de semaine", "", "deux semaines"],
     })
 
 
-def test_hebdo_et_trou():
-    h = analyse.tableau_hebdo(donnees())
-    assert h["variation_kg"].tolist()[1:] == [-1.0, -1.0, -4.0, -1.0]
-    # 14 jours entre le 19.10 et le 02.11 : -4 kg -> -2 kg/semaine
-    assert h["variation_kg_sem"].iloc[3] == pytest.approx(-2.0)
-    assert h["cumul_kg"].iloc[-1] == -7.0
+def test_exemple_utilisateur():
+    # 15.11 : injection à 105 kg ; 22.11 : injection à 102 kg -> -3 kg pour la dose du 15.11
+    h = analyse.tableau_hebdo(donnees()).set_index("date")
+    l = h.loc[pd.Timestamp("2026-11-22")]
+    assert l["variation_kg"] == -3.0
+    assert l["dose_attribuee"] == 5.0 and l["date_injection"] == pd.Timestamp("2026-11-15")
+    # la pesée du 08.11 est attribuée à l'injection du 01.11, pas à celle du jour même
+    assert h.loc[pd.Timestamp("2026-11-08"), "date_injection"] == pd.Timestamp("2026-11-01")
 
 
-def test_par_dose_avant_injection():
-    d = analyse.par_dose(analyse.tableau_hebdo(donnees(), True)).set_index("dose_mg")
-    # 2,5 mg : semaines 12.10 et 19.10 -> -2 kg sur 2 sem.
-    assert d.loc[2.5, "variation_kg_sem"] == pytest.approx(-1.0)
-    # 5 mg : -4 kg sur 2 sem. + -1 kg sur 1 sem. -> -5/3
-    assert d.loc[5.0, "variation_kg_sem"] == pytest.approx(-5 / 3)
+def test_pesee_sans_injection():
+    h = analyse.tableau_hebdo(donnees()).set_index("date")
+    mer = h.loc[pd.Timestamp("2026-11-25")]
+    assert mer["variation_kg"] == pytest.approx(-0.5)
+    assert mer["variation_kg_sem"] == pytest.approx(-0.5 / 3 * 7)
+    assert mer["date_injection"] == pd.Timestamp("2026-11-22")
+    # 25.11 -> 29.11 : toujours l'injection du 22.11
+    assert h.loc[pd.Timestamp("2026-11-29"), "date_injection"] == pd.Timestamp("2026-11-22")
 
 
-def test_par_dose_apres_injection():
-    d = analyse.par_dose(analyse.tableau_hebdo(donnees(), False)).set_index("dose_mg")
-    assert d.loc[2.5, "semaines"] == pytest.approx(1)
-    assert d.loc[5.0, "variation_kg_sem"] == pytest.approx(-6 / 4)
+def test_par_dose():
+    d = analyse.par_dose(analyse.tableau_hebdo(donnees())).set_index("dose_mg")
+    # 2,5 mg : 01.11->08.11 (-2) et 08.11->15.11 (-3) -> -2,5 kg/sem.
+    assert d.loc[2.5, "variation_kg_sem"] == pytest.approx(-2.5)
+    # 5 mg : 15->22 (-3), 22->25 (-0,5), 25->29 (-0,5), 29.11->13.12 (-3 sur 2 sem.) -> -7 kg sur 4 sem.
+    assert d.loc[5.0, "variation_kg_sem"] == pytest.approx(-7 / 4)
+    assert d.loc[5.0, "semaines"] == pytest.approx(4)
+    assert 7.5 not in d.index  # aucune pesée après l'injection de 7,5 mg
 
 
-def test_upsert_remplace_la_semaine():
-    d = analyse.upsert(donnees(), "2026-11-11", 7.5, 92.0, "modif")  # même semaine que le 09.11
-    assert len(d) == 5
-    assert d.iloc[-1]["dose_mg"] == 7.5 and d.iloc[-1]["commentaire"] == "modif"
-    d = analyse.upsert(d, "2026-11-16", 7.5, None, "")
-    assert len(d) == 6 and pd.isna(d.iloc[-1]["poids_kg"])
-    assert len(analyse.supprimer_semaine(d, "2026-11-20")) == 5
+def test_upsert_par_date():
+    d = analyse.upsert(donnees(), "2026-11-25", False, 3.0, 101.2, "modif")
+    assert len(d) == 7
+    l = d[d["date"] == pd.Timestamp("2026-11-25")].iloc[0]
+    assert l["poids_kg"] == 101.2 and pd.isna(l["dose_mg"]) and not l["injection"]
+    d = analyse.upsert(d, "2026-11-26", True, 5.0, None, "")  # même semaine, autre jour : nouvelle ligne
+    assert len(d) == 8
+    assert len(analyse.supprimer(d, "2026-11-26")) == 7
+
+
+def test_ancien_format_sans_colonne_injection():
+    d = analyse.normaliser(pd.DataFrame({"date": ["2026-11-01", "2026-11-04"], "dose_mg": [2.5, None],
+                                         "poids_kg": [100, 99.5], "commentaire": ["", ""]}))
+    assert d["injection"].tolist() == [True, False]
 
 
 def test_stockage_local_et_export(tmp_path):
     s = stockage.StockageLocal(tmp_path / "x.csv")
     assert s.charger().empty
-    s.modifier(lambda d: analyse.upsert(d, "2026-11-09", 5, 93.2, "Noël, repas; « copieux »"), "t")
-    s.modifier(lambda d: analyse.upsert(d, "2026-11-16", 5, 92.4, ""), "t")
+    s.modifier(lambda d: analyse.upsert(d, "2026-11-09", True, 5, 93.2, "Noël, repas; « copieux »"), "t")
+    s.modifier(lambda d: analyse.upsert(d, "2026-11-12", False, None, 92.9, ""), "t")
+    s.modifier(lambda d: analyse.upsert(d, "2026-11-16", True, 5, 92.4, ""), "t")
     d = s.charger()
-    assert d["poids_kg"].tolist() == [93.2, 92.4]
+    assert d["poids_kg"].tolist() == [93.2, 92.9, 92.4]
+    assert d["injection"].tolist() == [True, False, True]
     assert d["commentaire"].iloc[0] == "Noël, repas; « copieux »"
-    xl = pd.read_excel(__import__("io").BytesIO(analyse.export_excel(d)), sheet_name=None)
-    assert set(xl) == {"Saisies", "Suivi hebdo", "Par dose"}
+    xl = pd.read_excel(io.BytesIO(analyse.export_excel(d)), sheet_name=None)
+    assert set(xl) == {"Saisies", "Pesées", "Par dose"}
+    assert xl["Par dose"]["Variation totale (kg)"].iloc[0] == pytest.approx(-0.8)
 
 
 class FausseReponse:
@@ -100,8 +122,8 @@ def test_stockage_github_simule():
     s = stockage.StockageGitHub("jeton", "u/r")
     s.s = FausseAPI()
     assert s.charger().empty
-    s.modifier(lambda d: analyse.upsert(d, "2026-11-09", 5, 93.2, "é"), "t")
+    s.modifier(lambda d: analyse.upsert(d, "2026-11-09", True, 5, 93.2, "é"), "t")
     assert s.s.puts == 2  # conflit puis réussite
-    s.modifier(lambda d: analyse.upsert(d, "2026-11-16", 5, 92.4, ""), "t")
+    s.modifier(lambda d: analyse.upsert(d, "2026-11-16", True, 5, 92.4, ""), "t")
     d = s.charger()
     assert d["poids_kg"].tolist() == [93.2, 92.4] and d["commentaire"].iloc[0] == "é"
